@@ -11,8 +11,125 @@ GMAIL_USER = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", GMAIL_USER)
 GEOAPIFY_KEY = os.environ.get("GEOAPIFY_KEY", "")
+JOBS_API_URL = "https://emumba.pinpointhq.com/postings.json"
+JOBS_RECIPIENT = "muhammaddanish1458@gmail.com"
 
 API_URL = "https://akafoe.studylife.org/api/housing/db-apartments"
+
+def send_job_email(subject, html_body):
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = GMAIL_USER
+    msg["To"] = JOBS_RECIPIENT
+
+    msg.attach(MIMEText(html_body, "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+        smtp.send_message(msg)
+
+    print(f"Job email sent: {subject}")
+
+
+def format_job_html(job):
+    title = job.get("title", "Unknown Position")
+
+    department = (
+        job.get("job", {})
+        .get("department", {})
+        .get("name", "N/A")
+    )
+
+    location = (
+        job.get("location", {})
+        .get("name", "N/A")
+    )
+
+    employment_type = job.get("employment_type_text", "N/A")
+    workplace_type = job.get("workplace_type_text", "N/A")
+    url = job.get("url", "#")
+
+    return f"""
+    <div style="font-family:Arial,sans-serif;border:1px solid #ddd;border-radius:12px;padding:20px;margin-bottom:20px;background:#fff;">
+        <h2 style="margin-top:0;">💼 {title}</h2>
+
+        <table style="width:100%;font-size:14px;">
+            <tr>
+                <td><strong>Department</strong></td>
+                <td>{department}</td>
+            </tr>
+            <tr>
+                <td><strong>Location</strong></td>
+                <td>{location}</td>
+            </tr>
+            <tr>
+                <td><strong>Employment Type</strong></td>
+                <td>{employment_type}</td>
+            </tr>
+            <tr>
+                <td><strong>Workplace</strong></td>
+                <td>{workplace_type}</td>
+            </tr>
+        </table>
+
+        <div style="margin-top:16px;">
+            <a href=\"{url}" style="background:#2563eb;color:white;padding:10px 16px;border-radius:6px;text-decoration:none;">
+               View Job
+            </a>
+        </div>
+    </div>
+    """
+
+
+def check_new_jobs(db):
+    try:
+        response = requests.get(JOBS_API_URL, timeout=15)
+        jobs = response.json().get("data", [])
+
+        existing = db.table("sent_jobs").select("id").execute()
+        sent_ids = {row["id"] for row in existing.data}
+
+        new_jobs = [
+            job for job in jobs
+            if job["id"] not in sent_ids
+        ]
+
+        if not new_jobs:
+            print("No new jobs found.")
+            return
+
+        cards = "".join(
+            format_job_html(job)
+            for job in new_jobs
+        )
+
+        html = f"""
+        <div style="max-width:800px;margin:auto;background:#f8fafc;padding:20px;">
+            <div style="background:#2563eb;color:white;padding:20px;border-radius:12px;text-align:center;margin-bottom:20px;">
+                <h1 style="margin:0;">
+                    🚀 {len(new_jobs)} New Emumba Job{'s' if len(new_jobs) > 1 else ''}
+                </h1>
+            </div>
+
+            {cards}
+        </div>
+        """
+
+        send_job_email(
+            f"🚀 {len(new_jobs)} New Emumba Job{'s' if len(new_jobs) > 1 else ''}",
+            html
+        )
+
+        for job in new_jobs:
+            db.table("sent_jobs").insert({
+                "id": job["id"],
+                "title": job["title"]
+            }).execute()
+
+            print(f"Saved job: {job['title']}")
+
+    except Exception as e:
+        print(f"Job monitor failed: {e}")
 
 
 def get_coordinates(address):
@@ -176,55 +293,59 @@ def format_apartment_html(apt):
 def main():
     db = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    response = requests.get(API_URL, timeout=10)
-    apartments = response.json().get("data", [])
+    try:
+        response = requests.get(API_URL, timeout=10)
+        apartments = response.json().get("data", [])
 
-    existing = db.table("sent_apartments").select("id").execute()
-    sent_ids = {row["id"] for row in existing.data}
+        existing = db.table("sent_apartments").select("id").execute()
+        sent_ids = {row["id"] for row in existing.data}
 
-    new_ones = [a for a in apartments if a["id"] not in sent_ids]
+        new_ones = [a for a in apartments if a["id"] not in sent_ids]
 
-    if not new_ones:
-        print("No new apartments.")
-        return
+        if new_ones:
+            all_cards = "".join(
+                format_apartment_html(apt)
+                for apt in new_ones
+            )
 
-    # Build one combined email for all new listings
-    all_cards = "".join(format_apartment_html(apt) for apt in new_ones)
-    count = len(new_ones)
+            count = len(new_ones)
 
-    full_html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px 16px;background:#f9f9f9;">
+            full_html = f"""
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px 16px;background:#f9f9f9;">
 
-      <!-- Header -->
-      <div style="background:#0066cc;border-radius:12px;padding:24px;margin-bottom:28px;text-align:center;">
-        <h1 style="color:#fff;margin:0;font-size:22px;">🏠 {count} New Apartment{"s" if count > 1 else ""} Found</h1>
-        <p style="color:#cce0ff;margin:8px 0 0;font-size:13px;">
-          Akafoe Bochum · {len(apartments)} total listings checked
-        </p>
-      </div>
+              <div style="background:#0066cc;border-radius:12px;padding:24px;margin-bottom:28px;text-align:center;">
+                <h1 style="color:#fff;margin:0;font-size:22px;">
+                    🏠 {count} New Apartment{'s' if count > 1 else ''} Found
+                </h1>
+                <p style="color:#cce0ff;margin:8px 0 0;font-size:13px;">
+                  Akafoe Bochum · {len(apartments)} total listings checked
+                </p>
+              </div>
 
-      <!-- Apartment cards -->
-      {all_cards}
+              {all_cards}
 
-      <!-- Footer -->
-      <p style="color:#aaa;font-size:11px;margin-top:32px;text-align:center;">
-        This alert was sent automatically every 5 minutes via GitHub Actions.<br/>
-        <a href="https://akafoe.studylife.org/wohnen/wohnheime" style="color:#aaa;">Browse all listings</a>
-      </p>
+            </div>
+            """
 
-    </div>
-    """
+            subject = f"🏠 {count} New Apartment{'s' if count > 1 else ''} Available – Akafoe Bochum"
 
-    subject = f"🏠 {count} New Apartment{'s' if count > 1 else ''} Available – Akafoe Bochum"
-    send_email(subject, full_html)
+            send_email(subject, full_html)
 
-    # Save to DB after sending
-    for apt in new_ones:
-        db.table("sent_apartments").insert({
-            "id": apt["id"],
-            "title": apt["title"]
-        }).execute()
-        print(f"Saved: {apt['title']}")
+            for apt in new_ones:
+                db.table("sent_apartments").insert({
+                    "id": apt["id"],
+                    "title": apt["title"]
+                }).execute()
+
+                print(f"Saved apartment: {apt['title']}")
+        else:
+            print("No new apartments.")
+
+    except Exception as e:
+        print(f"Apartment monitor failed: {e}")
+
+    # Always run jobs checker
+    check_new_jobs(db)
 
 
 if __name__ == "__main__":
